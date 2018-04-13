@@ -1,0 +1,549 @@
+---
+title: "01_keras"
+author: "Jan Holstein"
+date: '`r Sys.Date()`'
+output:
+  prettydoc::html_pretty:
+    self_contained: yes
+    highlight: github
+    theme: cayman
+    css: style.css
+  pdf_document:
+    keep_tex: yes
+---
+
+
+
+```{r}
+rm(list=ls())
+```
+
+
+ start with a simple example: recognizing handwritten digits from images.
+For this, we will use the most famous training data for image recognition: the MNIST data set.
+
+```{r message=FALSE, warning=FALSE}
+#library(tidyverse)
+library(tibble)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+```
+
+<br>
+
+## Input data
+
+The `keras` package comes with a number of example datasets. These are already included in the package and can be called via `dataset_mnist()`, `dataset_cifar10()`, `dataset_imdb()`, etc. Alternatively, you could load your own data from a file. A csv file could be loaded via `readr::read_csv()` or `data.table::read.csv()`.
+
+The MNIST data set contains 70,000 images of handwritten digits. It is conveniently included in the `keras` package and we can call it with the `dataset_mnist()` function. Because we want to use the MNIST dataset object in downstream analysis, we need to assign the function return a name: `mnist <- dataset_mnist()`. The `str()` function tells us the structure of the R object.
+
+![](slides/img/mnist.png)
+
+```{r}
+library(keras)
+mnist <- dataset_mnist()
+str(mnist)
+#save(mnist,file="mnist.bin")
+```
+
+The output of `str(mnist)` as seen above shows us that the `mnist` object is a `List of 2`. Slots in lists (and also columns in data frames) can be accessed with a Dollar sign `$`. In our example, we can see that the two list slots in the object `mnist` are called `train` and `test`. The `train` part contains 60,000 images for model training, the `test` part contains another 10,000 images for model testing. Let's look at the `train` data alone by calling `mnist$train`.
+
+```{r}
+str(mnist$train)
+```
+
+Here we see that the training data also consists of a `List of 2`, this time with the slots `x` and `y`. The information following `$ x:` and `$ y:` tells us what format each of these slots has: they both consist of integers `int` but are of different sizes.
+
+### Data formats
+
+Before we continue, let's have a closer look at data structures. The main ones we'll be working with are `data.frame`, `matrix` and `array`. The differences between them are numerous and sometimes subtle. For now, it is enough to know that data frames can contain a mix of numeric, character or categorical data, lists and even embedded data frames, while matrices are strictly numeric and two-dimensional. Matrices also generally don't have row- and column names (although they can have them for clarity's sake). Arrays, we have already encountered in the introduction to tensors: they are multi-dimensional matrices.
+
+### Indexing
+
+The square brackets `[ ]` are used for indexing. If we consider a matrix, we would index rows and columns like so: `matrix_name[row_number, column_number]`. Important to know for indexing is that R is 1-based, meaning that the first element is indexed with a 1. Other languages, like Python, are 0-based, meaning that the first element would be indexed with a 0. Let's consider the following matrix:
+
+```{r}
+matrix_example <- matrix(runif(1e2), ncol = 5)
+matrix_example
+```
+
+If we wanted to extract only the second row but keep all columns, we could call:
+
+```{r}
+matrix_example[2, ]
+```
+
+The same in reverse if we wanted to keep all rows but look only at the third column:
+
+```{r}
+matrix_example[, 3]
+```
+
+We can also specific more complex indices, like rows 1 to 5 (specified with a colon `:`) and 8 with column 3 to 4. Notice here, that when we want to concatenate indices, we need to wrap them in `c(number_1, number_n)` and separate them with commas `,`. 
+
+```{r}
+matrix_example[c(1:5, 8), 3:4]
+```
+
+Similarly we can tell R that we want to remove rows/columns by prepending a minus `-` to the index:
+
+```{r}
+matrix_example[-c(1:4), -3]
+```
+
+Let's take what we learned about indexing and consider the description of `mnist$train$x` and `mnist$train$y` again.
+
+```{r}
+str(mnist$train)
+```
+
+Following the information `$ x: int` and `$ y: int` we find information about the dimensions of the two list slots. `x` has the dimensions `[1:60000, 1:28, 1:28]`. A normal 2-dimensional matrix would have two dimensions, like our example matrix from before:
+
+```{r}
+str(matrix_example)
+```
+
+### Data dimensions and types
+
+This output tell us that `matrix_example` is of numeric format and has 20 rows and 5 columns. We can also use the `dim()` function to specifically ask for the dimensions of an object:
+
+```{r}
+dim(matrix_example)
+```
+
+Because the MNIST data set contains images, it is a little bit more complicated. Let's look only at `x` for now.
+
+```{r}
+str(mnist$train$x)
+dim(mnist$train$x)
+```
+
+Its dimension description contains three slots: `[1:60000, 1:28, 1:28]` and it tells us that we have 60,000 28 x 28 matrices (or a 3-dimensional array). This is because we have 60,000 images and each image is saved as a matrix with 28 rows and 28 columns (image width & height, representing the 28 x 28 pixels). For example, we can look at the third image with indexing again and plot it with the `image()` function. Each value in the matrix represents a greyscale value, here from 0 (black) to 255 (white).
+
+```{r}
+image(mnist$train$x[5, , ], col = c("white", rev(grey.colors(254))))
+```
+
+Now look at the corresponding slot `mnist$train$y`:
+
+```{r}
+str(mnist$train$y)
+```
+
+Here, we are given the information that `y` consists of 60,000 integers stored in a 1-dimensional vector (or array). These integers are the labels of our training data: For each image in `mnist$train$x`, `mnist$train$y` tells us (and the neural network later on) which number is written in that image. The third image that we plotted above has the label `4`:
+
+```{r}
+mnist$train$y[5]
+```
+
+Here, we have now encountered data that is stored in arrays of different dimensions. In the context of neural networks, arrays are also called tensors hence the name "Tensor Flow"). Tensor is a mathematical term but I find that the machine learning community tends to use it somewhat more liberally than most mathematicians would. For our purposes, it is enough to know that a tensor can mean any array of any dimension that is used as input for a layer in neural networks.
+
+<br>
+
+## Train and test split
+
+For modeling, we split the data set into training and test data and create separate objects for the labels as well. Here, we again use `<-` to assign new variable names to the different slots of the `mnist` object.
+
+```{r}
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+x_test <- mnist$test$x
+y_test <- mnist$test$y
+```
+
+We now have four data objects, two for training a neural network (`x_train` contains the image data as 3-D arrays, `y_train` the image labels as a 1-D vector) and two corresponding ones for testing the quality and accuracy of the neural network.
+
+If we don't use data that is already split into training and test data, we need to do this now, before we do anything else with it. Otherwise, we would bias our models and get into dangerous over-fitting territory! As an example, let's take the dummy matrix from before.
+
+```{r}
+head(matrix_example)
+```
+
+We can split the data by creating a random index for every row in our matrix: we want to have two batches of data, so every row that has been assigned a `1` will go in one batch, and every row assigned a `2` will go in the other batch. To do this, we are using the `base::sample()` function with replacement by setting `replace = TRUE`. The probability of choosing a 1 or a 2 should not be proportional to the weights among the remaining items, so we set the probability weights accordingly (`prob`).
+
+But before we create the random index, we should set a random seed `set.seed()`. The seed is a number of R’s random number generator. Setting a seed is always recommended when we potentially want to be able to reproduce our analysis because we will always get the same sequence of random numbers when we supply the same seed. 
+
+```{r}
+set.seed(42)
+index <- sample(2, nrow(matrix_example), replace = TRUE, prob = c(0.8, 0.2))
+index
+```
+
+Now, we can subset the matrix according to our randomly assigned indices:
+
+```{r}
+train_example <- matrix_example[index == 1, ]
+test_example <- matrix_example[index == 2, ]
+```
+
+```{r}
+nrow(train_example)
+nrow(test_example)
+```
+
+<br>
+
+## Data preprocessing
+
+In order for our neural network to understand the input data, we need to flatten `x_train` and `x_test` from 3 to 2 dimensions. This we do by deflating the 28 x 28 pixel arrays into 1-dimensional vectors. For a better understanding consider this simple example: We will create some dummy data consisting of a matrix (a) with 4 rows (b) and 5 columns (c) by using the `array()` function with `dim = c(b, c, a)`. We will populate the matrix with random numbers from 1 to 100 (`sample(1:100)`).
+
+```{r}
+array_3d <- array(sample(1:100), dim = c(4, 5, 1))
+array_3d
+dim(array_3d)
+```
+
+We now want to change the dimensions of the array so that the matrix represents one row of data. In the MNIST example, this would mean that every image now represents one row of data. Each column then gives the value of one of a matrix position, e.g. the first column contains the value from the first row and first column (`[1, 1]`), the second column values from the first row and second column (`[1, 2]`) and so on.
+
+```{r}
+dim(array_3d) <- c(1, 4 * 5)
+array_3d
+```
+
+Now, we do the same for our training and test data so that we end up with 784 features. Each feature (or what a statistician would call "variable") gives information about the value of one pixel of the original input images.
+
+```{r }
+dim(x_train) <- c(60000, 28 * 28)
+dim(x_test) <- c(10000, 28 * 28)
+```
+
+```{r eval=FALSE, echo=FALSE}
+x_train <- array(x_train, dim = c(dim(x_train)[1], prod(dim(x_train)[-1])))
+x_test <- array(x_test, dim = c(dim(x_test)[1], prod(dim(x_test)[-1])))
+```
+
+```{r}
+dim(x_train)
+```
+
+We will also re-scale the data by dividing through the max value 255 so that our values will range from 0 to 1. An alternative would be to use the `normalize()` function from the `keras` package. You can try out both and see for yourself how the different normalization methods affect the outcome!
+
+```{r }
+x_train <- x_train / 255
+x_test <- x_test / 255
+```
+
+```{r eval=FALSE}
+# alternative - not run
+x_train <- normalize(x_train)
+x_test <- normalize(x_test)
+```
+
+```{r}
+normalize(matrix_example)
+```
+
+```{r eval=FALSE, echo=FALSE}
+x_train %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  gather(x, y, V1:V784) %>%
+  sample_frac(0.2) %>%
+  ggplot(aes(x = y)) +
+    geom_density() +
+    theme_bw()
+```
+
+```{r eval=FALSE}
+x_train[1:10, 1:10]
+```
+
+### One-hot encoding
+
+Now, we will also convert the labels into dummy variables (one-hot encoding). Up until now, we had a 1-D array with the respective number label for each image.
+
+```{r}
+str(y_train)
+```
+
+We want to convert that to a binary representation with a column for each label from 0 to 9 using the `keras::to_categorical()` function. Because the header is not informative now, we will change it.
+
+```{r}
+y_test_orig <- y_test
+
+y_train <- to_categorical(y_train, 10)
+y_test <- to_categorical(y_test, 10)
+```
+
+```{r}
+colnames(y_train) <- paste0("label_", c(0:9))
+colnames(y_test) <- paste0("label_", c(0:9))
+```
+
+```{r}
+str(y_train)
+```
+
+```{r}
+head(y_train)
+```
+
+<br>
+
+## Sequential models
+
+Now that we have prepared our data, we can start building a neural network model. The simplest model to build is a sequential model. A sequential model consists of a linear stack of layers.
+
+Keras, as Tensor Flow, works with a building-block principle: similar to a Lego tower, you start with a base (or input) layer and you build on top of it with subsequent layers. For coding these models, the Keras-R API uses the same pipe operator `%>%` that is also used in the tidyverse. A difference to most functions is that Keras models are modified in place, which means that we don't need to reassign the object name when we are adding layers. Another principle of Keras is that you first define your model in its entirety. Only then will it be compiled.
+
+<br>
+
+### Defining a simple model
+
+Let's start with a very simple model: a sequential model with only two sets of layers - an input an an output layer. For this simple model, we use densely connected layers for input and output and connect it with a dropout layer. A densely connected layer connects each input to every output by a weight in a feed-forward manner.
+
+The first layer needs to have a defined input shape. Here, we have data with 784 features, so we set that as our `input_shape`. The following layers don't need to have it set specifically because the shape will automatically be found by the modeling process.
+
+We also need to specify the dimensionality of the output space as `units`. The final layer should have the same number of units as output groups we are trying to classify - in our example these are the number labels from 0 to 9.
+
+And we will specify an activation function for each dense layer, in the first we'll use ReLU and in the second softmax.
+**ReLU, or Rectified Linear Units,** is the simplest non-linear activation function to use: it produces an output of 0 if the input is smaller than or equal to 0; if the input is bigger than 0, the output will be equal to the input. The **softmax** activation function is more useful for multi-class classification tasks as it divides each output by the sum of the output so that we will get proportions of the output and the total sum is equal to 1. By dealing with proportions, we can treat them as categorical probability distributions that give us the likelihoods for each class to be true. Let's consider as an example an image with the handwritten number 4. If classified correctly, the softmax activation function of the output layer will have the biggest proportion value for the unit corresponding to label "4" and thus activate this output node. This means that for each image we will get a probability score for each of the 10 labels and we will choose the one with the highest value as the most likely classification.
+
+DNNs are prone to overfitting because of the added layers of abstraction, which allow them to model rare dependencies in the training data. In the dropout layer we specify a fraction of neurons that should be withheld randomly during training epochs so as to reduce overfitting. The dropout rate is set to 20%, meaning one in 5 inputs will be randomly excluded from each update cycle.
+
+> Dropout is a technique where randomly selected neurons are ignored during training. This means that their contribution to the activation of downstream neurons is temporally removed on the forward pass and any weight updates are not applied to the neuron on the backward pass.
+As a neural network learns, neuron weights settle into their context within the network. Weights of neurons are tuned for specific features providing some specialization. Neighboring neurons become to rely on this specialization, which if taken too far can result in a fragile model too specialized to the training data. This reliant on context for a neuron during training is referred to complex co-adaptations.
+You can imagine that if neurons are randomly dropped out of the network during training, that other neurons will have to step in and handle the representation required to make predictions for the missing neurons. This is believed to result in multiple independent internal representations being learned by the network.
+The effect is that the network becomes less sensitive to the specific weights of neurons. This in turn results in a network that is capable of better generalization and is less likely to overfit the training data.
+https://machinelearningmastery.com/dropout-regularization-deep-learning-models-keras/
+
+The name of a layer would be provided automatically, but we can make things easier on us later if we name it specifically.
+
+```{r}
+model_sequential <- keras_model_sequential()
+model_sequential %>%
+  layer_dense(units = 392,        # nodes in layer
+              input_shape = 784,  # features
+              activation = "relu",
+              name = "input_layer_dense_sequential") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 10, 
+              activation = "softmax",
+              name = "output_layer_dense_sequential")
+```
+
+The `summary()` function gives an overview of the model we've created.
+Note that the column `Output Shape` says `(None, ...)` because we haven't defined any batches.
+
+```{r}
+summary(model_sequential)
+```
+
+<br>
+
+## Configuring the model for training
+
+Once we have defined the layers, we can compile the model. Here, we need to define an optimizer function. There are several options and you can get a list by calling `??optimizer_` from the console. Here we choose stochastic gradient descent for gradient descent optimization.
+
+We also need to name an objective function to be used for minimizing the loss and a metric against which to measure model performance. Because we set a softmax activation function for our output layer, we will use categorical cross-entropy for minimizing loss because it deals with probability distributions.
+
+We also need to specify a metric against which to measure the performance of our model. We can choose one or several metrics. Here, we want to know accuracy and mean squared error (MSE).
+
+```{r}
+model_sequential %>% compile(
+  optimizer = optimizer_sgd(),
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy", "mse")
+)
+```
+
+## Saving a model
+
+Useful functions are `save_model_hdf5()` and `load_model_hdf5()`. They allow us to save our model and load it in again at a later time.
+
+```{r eval=FALSE}
+save_model_hdf5(model_sequential, "my_model.h5")
+```
+
+```{r eval=FALSE}
+model_sequential <- load_model_hdf5("my_model.h5")
+```
+
+We can also save the model weights (`save_model_weights_hdf5()` & `load_model_weights_hdf5()`) and export a model configuration to JSON (`model_to_json()` & `model_from_json()`) or YAML (`model_to_yaml()` & `model_from_yaml()`). This, you could also use to load your model back into a Python script for deployment.
+
+<br>
+
+## Model training
+
+We now train the model for a specified number of epochs. An epoch describes a complete iteration over the entire data set. With `x` and `y`, we give the training data and the corresponding labels. We also define the batch size and number of epochs. The optimal number of epochs and batch size are highly dependent on the problem and you can try out different rates to see how they effect the outcome. Model fitting can improve if we add additional epochs; this, in that case, our accuracy will be increasing with every epoch. At a certain point, however, this increase in accuracy will start to plateau and converge. At this point, adding more epochs will not be beneficial any longer.
+
+- **Batch size:**
+It is computationally expensive to use all the data to train your algorithms at the same time, therefore we want to make smaller batches. Batch size defines the number of samples that are going through a cycle of backpropagation and optimization together. In our example, we have 60,000 training samples and we set a batch size of 100. This means, that our algorithm will take the first 100 samples and run them through the whole network, calculate the gradient and update their weights. It will do the same for all other batches of 100 samples.
+
+> From Nitish Shirish Keskar, Dheevatsa Mudigere, Jorge Nocedal, Mikhail Smelyanskiy, Ping Tak Peter Tang. On Large-Batch Training for Deep Learning: Generalization Gap and Sharp Minima. https://arxiv.org/abs/1609.04836 :
+
+> The stochastic gradient descent method and its variants are algorithms of choice for many Deep Learning tasks. These methods operate in a small-batch regime wherein a fraction of the training data, usually 32--512 data points, is sampled to compute an approximation to the gradient. It has been observed in practice that when using a larger batch there is a significant degradation in the quality of the model, as measured by its ability to generalize. There have been some attempts to investigate the cause for this generalization drop in the large-batch regime, however the precise answer for this phenomenon is, hitherto unknown. In this paper, we present ample numerical evidence that supports the view that large-batch methods tend to converge to sharp minimizers of the training and testing functions -- and that sharp minima lead to poorer generalization. In contrast, small-batch methods consistently converge to flat minimizers, and our experiments support a commonly held view that this is due to the inherent noise in the gradient estimation. We also discuss several empirical strategies that help large-batch methods eliminate the generalization gap and conclude with a set of future research ideas and open questions.
+
+> […]
+
+> The lack of generalization ability is due to the fact that large-batch methods tend to converge to sharp minimizers of the training function. These minimizers are characterized by large positive eigenvalues in ∇2f(x)∇2f(x) and tend to generalize less well. In contrast, small-batch methods converge to flat minimizers characterized by small positive eigenvalues of ∇2f(x)∇2f(x). We have observed that the loss function landscape of deep neural networks is such that large-batch methods are almost invariably attracted to regions with sharp minima and that, unlike small batch methods, are unable to escape basins of these minimizers.
+
+> […]
+
+- **Validation split:**
+
+Additionally, it is good practice to include a validation set in training on which to measure training metrics for each epoch (loss, accuracy, etc.), so as to reduce overfitting. Here, we want to hold out 15% of the training data for validation.
+
+- **TensorBoard:**
+
+To record data for [visualization with TensorBoard](https://tensorflow.rstudio.com/keras/articles/training_visualization.html), we add a TensorBoard callback to the `fit()` function. The most important option is the `log_dir`, which determines which directory logs are written to for a given training run.
+
+```{r warning=FALSE, message=FALSE}
+history_sequential <- model_sequential %>% fit(
+  x = x_train, 
+  y = y_train, 
+  batch_size = 100, 
+  epochs = 10, 
+  validation_split = 0.15,
+  callbacks = callback_tensorboard(log_dir = "logs") # only needed for TensorBoard
+)
+```
+
+```{r}
+summary(history_sequential)
+```
+
+Finally, we can plot the validation metrics for each epoch:
+
+```{r}
+plot(history_sequential) +
+  theme_bw()
+```
+
+Or view the model with TensorBoard.
+
+```{r eval=FALSE}
+tensorboard("logs")
+```
+
+![](slides/img/tensorboard_example.png)
+
+<br>
+
+## Model evaluation
+
+The performance metrics that we measured on the hold-out validation set are useful to choose a model and hyperparameters. But the real performance criterion for a model is its performance on test data it hasn't seen before. The `evaluate()` function is used to measure the performance metrics on the test data `y_test` from before.
+
+```{r }
+model_sequential %>% evaluate(x_test, y_test)
+```
+
+We can also get the predicted labels for each test image with the `predict_classes()` function or the prediction probabilities with the `predict_proba()` function.
+
+```{r }
+res_class <- model_sequential %>% predict_classes(x_test)
+res_proba <- model_sequential %>% predict_proba(x_test)
+```
+
+If we compare them directly with their actual labels, we can count & examine the images that were mis-classified.
+
+```{r}
+res_df <- data.frame(id = 1:10000,
+                     pred = res_class,
+                     prob = round(res_proba, digits = 4),
+                     act = y_test_orig) %>%
+  mutate(accurate = ifelse(pred == act, TRUE, FALSE))
+head(res_df)
+```
+
+```{r}
+res_df %>%
+  count(accurate)
+```
+
+```{r echo=FALSE}
+n_false <- res_df %>% count(accurate) %>% filter(!accurate) %>% select(n)
+```
+
+`r n_false$n` images were mis-classified. Let's look at the first one:
+
+```{r}
+res_df %>%
+  filter(!accurate) %>%
+  head(1)
+```
+
+```{r}
+id_false <- res_df %>%
+  filter(!accurate) %>%
+  head(1) %>%
+  select(id)
+```
+
+Let's have a look at the image:
+
+```{r}
+image(mnist$test$x[id_false$id, , ], col = c("white", rev(grey.colors(255))))
+```
+
+Here, it is quite clear that this is a hard image to classify. Even as a human, it isn't easy to say which number this should be.
+
+<br>
+
+## Model optimization
+
+Usually (unless you are very experienced and/or very lucky), your first model won't be particularly accurate. You will need to play around with the layers, optimization functions and other parameters, like the number of hidden units. Take some time to change some of these parameters and have a look at how they influence the outcome!
+
+You could e.g.
+
+- add another hidden layer
+- increase the number of hidden units
+- decrease the learning rate of the stochastic gradient descent optimizer
+- or use a different optimizer function, like ADAMAX (ADAMAX is a variation of Adaptive Moment Estimation (ADAM), which computes adaptive learning rates for each parameter while keeping an exponentially decaying average of past gradients)
+
+<br>
+
+# The Python equivalent
+
+Just to show how similar the code is with Python, here is how it would look:
+
+```{}
+# importing libraries
+import keras
+from keras.models import Sequential
+from keras.layers import Dense
+
+import numpy as np
+import pandas as pd
+
+# loading the MNIST dataset
+from keras.datasets import mnist
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
+
+# reshaping and scaling
+x_train=np.reshape(x_train,(x_train.shape[0],-1)) / 255
+x_test=np.reshape(x_test,(x_test.shape[0],-1)) / 255
+
+# one-hot encoding
+y_train=pd.get_dummies(y_train)
+y_test=pd.get_dummies(y_test)
+
+y_train=np.array(y_train)
+y_test=np.array(y_test)
+
+# defining model
+model=Sequential()
+
+# add layers
+model.add(Dense(392, input_dim = 784, activation = 'relu'))
+model.add(Dropout(0.3))
+model.add(Dense(10, activation = 'softmax'))
+
+# compiling model
+model.compile(loss = 'categorical_crossentropy', optimizer = "sgd", metrics = ['accuracy', 'mse'])
+
+# fitting model and performing validation
+model.fit(x_train, y_train, 
+          epochs = 10,
+          batch_size = 100,
+          validation_data = (x_test, y_test))
+```
+
+---
+
+```{r}
+sessionInfo()
+```
+
+
