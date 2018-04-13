@@ -13,7 +13,14 @@
 #   Check Package:             'Cmd + Shift + E'
 #   Test Package:              'Cmd + Shift + T'
 
-hello <- function() {
-  print("Hello, world!")
 
-}
+library(ISLR)
+print(head(College))
+maxs <- apply(College[, 2:18], 2, max)
+mins <- apply(College[, 2:18], 2, min)
+
+
+scaled.data <- as.data.frame(scale(College[,2:18],
+                                   center = mins,
+                                   scale = maxs - mins))
+
